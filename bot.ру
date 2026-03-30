@@ -1,0 +1,258 @@
+import os
+import logging
+import asyncio
+import random
+from datetime import datetime
+from gtts import gTTS
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from groq import Groq
+import nest_asyncio
+
+nest_asyncio.apply()
+
+# ==================== КОНФИГУРАЦИЯ ====================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# 🔴 МЫНА ЖЕРГЕ ӨЗ ТОКЕНДЕРІҢІЗДІ ҚОЙЫҢЫЗ 🔴
+BOT_TOKEN = "8701883302:AAGzKMUKLkAbkEV6bVmru6ScAmuLioqpv9g"
+GROQ_API_KEY = "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"
+
+# Groq клиенті
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+# Деңгейлер бойынша сабақтар
+ENGLISH_LESSONS = {
+    "A1": [
+        {"title": "Greetings", "text": "Hello! Nice to meet you. My name is John. What is your name? How are you today?"},
+        {"title": "Family", "text": "I have a mother, father, and one sister. My mother is a teacher. My father is a doctor."},
+    ],
+    "A2": [
+        {"title": "Daily Routine", "text": "I wake up at 7 AM every day. Then I have breakfast. I usually eat toast and drink coffee."},
+        {"title": "Shopping", "text": "Yesterday I went to the supermarket. I bought vegetables, fruits, and milk."},
+    ],
+    "B1": [
+        {"title": "Travel Experiences", "text": "Last summer, I traveled to London. I visited the British Museum and saw Big Ben."},
+        {"title": "Career Goals", "text": "I want to become a software engineer. I am learning programming every day."},
+    ],
+    "B2": [
+        {"title": "Climate Change", "text": "Climate change is one of the biggest challenges today. Rising temperatures affect ecosystems worldwide."},
+        {"title": "Technology Impact", "text": "Artificial intelligence is transforming industries. It creates new opportunities."},
+    ]
+}
+
+TOPICS = ["Technology", "Travel", "Food", "Health", "Education", "Business", "Environment", "Culture", "Sports", "Art"]
+
+user_data = {}
+
+# ==================== КӨМЕКШІ ФУНКЦИЯЛАР ====================
+def get_groq_response(system_prompt: str, user_message: str, user_level: str = "B1") -> str:
+    try:
+        full_system_prompt = f"""You are an English teacher for a student at {user_level} level.
+{system_prompt}
+
+Guidelines:
+- Respond in English only
+- Use vocabulary appropriate for {user_level} level
+- Be encouraging and helpful
+- Keep responses concise (2-4 sentences)"""
+        
+        response = groq_client.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[
+                {"role": "system", "content": full_system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.7,
+            max_tokens=300
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Groq API қатесі: {e}")
+        return "Sorry, I'm having trouble responding. Please try again."
+
+def create_audio(text: str, filename: str) -> str:
+    try:
+        if not os.path.exists('audio_files'):
+            os.makedirs('audio_files')
+        
+        filepath = f"audio_files/{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
+        tts = gTTS(text=text, lang='en', slow=False)
+        tts.save(filepath)
+        return filepath
+    except Exception as e:
+        logger.error(f"Аудио жасау қатесі: {e}")
+        return None
+
+# ==================== КОМАНДАЛАР ====================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name
+    
+    user_data[user_id] = {"level": "A2", "topic": "General"}
+    
+    keyboard = [
+        [InlineKeyboardButton("📚 Деңгейді таңдау", callback_data="choose_level")],
+        [InlineKeyboardButton("🎯 Тақырып таңдау", callback_data="choose_topic")],
+        [InlineKeyboardButton("🎧 Аудио сұрау", callback_data="get_audio")],
+        [InlineKeyboardButton("💬 Ағылшынша сөйлесу", callback_data="chat_mode")],
+        [InlineKeyboardButton("📖 Менің деңгейім", callback_data="show_level")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        f"🎓 *Welcome to AI English Teacher Bot, {user_name}!*\n\n"
+        f"🇬🇧 Мен сіздің ағылшын тілін үйрететін AI көмекшіңізбін.\n\n"
+        f"✨ *Мүмкіндіктер:*\n"
+        f"• 🎧 Кез келген уақытта аудио\n"
+        f"• 💬 Ағылшынша сөйлесу\n"
+        f"• 📚 Деңгей таңдау (A1-B2)\n"
+        f"• 🎯 Тақырып таңдау\n\n"
+        f"Төмендегі батырмалар арқылы бастаңыз!",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if query.data == "choose_level":
+        keyboard = [
+            [InlineKeyboardButton("A1 - Beginner", callback_data="set_level_A1")],
+            [InlineKeyboardButton("A2 - Elementary", callback_data="set_level_A2")],
+            [InlineKeyboardButton("B1 - Intermediate", callback_data="set_level_B1")],
+            [InlineKeyboardButton("B2 - Upper Intermediate", callback_data="set_level_B2")],
+            [InlineKeyboardButton("◀️ Артқа", callback_data="back_to_menu")],
+        ]
+        await query.edit_message_text("📚 *Деңгейіңізді таңдаңыз:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif query.data.startswith("set_level_"):
+        level = query.data.replace("set_level_", "")
+        if user_id in user_data:
+            user_data[user_id]["level"] = level
+        await query.edit_message_text(f"✅ Деңгей *{level}* болып орнатылды!", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Басты мәзір", callback_data="back_to_menu")]]))
+    
+    elif query.data == "choose_topic":
+        keyboard = []
+        for i, topic in enumerate(TOPICS):
+            if i % 2 == 0:
+                row = [InlineKeyboardButton(topic, callback_data=f"set_topic_{topic}")]
+                if i+1 < len(TOPICS):
+                    row.append(InlineKeyboardButton(TOPICS[i+1], callback_data=f"set_topic_{TOPICS[i+1]}"))
+                keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("◀️ Артқа", callback_data="back_to_menu")])
+        await query.edit_message_text("🎯 *Тақырып таңдаңыз:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif query.data.startswith("set_topic_"):
+        topic = query.data.replace("set_topic_", "")
+        if user_id in user_data:
+            user_data[user_id]["topic"] = topic
+        await query.edit_message_text(f"✅ Тақырып *{topic}* болып орнатылды!", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Басты мәзір", callback_data="back_to_menu")]]))
+    
+    elif query.data == "get_audio":
+        if user_id not in user_data:
+            user_data[user_id] = {"level": "A2", "topic": "General"}
+        
+        level = user_data[user_id].get("level", "A2")
+        topic = user_data[user_id].get("topic", "General")
+        
+        level_texts = ENGLISH_LESSONS.get(level, ENGLISH_LESSONS["A2"])
+        lesson = random.choice(level_texts)
+        
+        ai_text = get_groq_response(f"Create a short {level} level English text about {topic}. 3-5 sentences.", f"Create lesson about {topic}", level)
+        
+        audio_file = create_audio(ai_text, f"lesson_{level}_{topic}")
+        
+        if audio_file:
+            with open(audio_file, 'rb') as audio:
+                await query.edit_message_text(f"🎧 *{lesson['title']}* - {level} деңгей\n\n📝 Тақырып: {topic}\n\nАудио жасалуда...", parse_mode='Markdown')
+                await context.bot.send_audio(chat_id=user_id, audio=audio, caption=f"📚 *{lesson['title']}*\n📊 Деңгей: {level}\n🎯 Тақырып: {topic}\n\n{ai_text}", parse_mode='Markdown')
+            os.remove(audio_file)
+    
+    elif query.data == "chat_mode":
+        await query.edit_message_text(
+            "💬 *Сөйлесу режимі активтелді!*\n\n"
+            f"📊 Деңгей: {user_data.get(user_id, {}).get('level', 'A2')}\n"
+            f"🎯 Тақырып: {user_data.get(user_id, {}).get('topic', 'General')}\n\n"
+            "✏️ Маған ағылшынша хабарлама жіберіңіз!\n"
+            "🚫 Тоқтату: /stop_chat",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Басты мәзір", callback_data="back_to_menu")]])
+        )
+        context.user_data['chat_mode'] = True
+    
+    elif query.data == "show_level":
+        if user_id in user_data:
+            level = user_data[user_id].get("level", "A2")
+            topic = user_data[user_id].get("topic", "General")
+            await query.edit_message_text(f"📊 *Сіздің параметрлеріңіз:*\n\n🎯 Деңгей: *{level}*\n📚 Тақырып: *{topic}*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Артқа", callback_data="back_to_menu")]]))
+    
+    elif query.data == "back_to_menu":
+        keyboard = [
+            [InlineKeyboardButton("📚 Деңгейді таңдау", callback_data="choose_level")],
+            [InlineKeyboardButton("🎯 Тақырып таңдау", callback_data="choose_topic")],
+            [InlineKeyboardButton("🎧 Аудио сұрау", callback_data="get_audio")],
+            [InlineKeyboardButton("💬 Ағылшынша сөйлесу", callback_data="chat_mode")],
+            [InlineKeyboardButton("📖 Менің деңгейім", callback_data="show_level")],
+        ]
+        await query.edit_message_text("🏠 *Басты мәзір*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_message = update.message.text
+    
+    if not context.user_data.get('chat_mode', False):
+        await update.message.reply_text("👋 Сөйлесу режимін қосу үшін /start -> 'Ағылшынша сөйлесу'")
+        return
+    
+    if user_id not in user_data:
+        user_data[user_id] = {"level": "A2", "topic": "General"}
+    
+    level = user_data[user_id].get("level", "A2")
+    topic = user_data[user_id].get("topic", "General")
+    
+    system_prompt = f"You are an English teacher. Student level: {level}. Topic: {topic}. Correct mistakes gently."
+    
+    thinking = await update.message.reply_text("🤔 Thinking...")
+    response = get_groq_response(system_prompt, user_message, level)
+    await thinking.delete()
+    await update.message.reply_text(f"👩‍🏫 *Teacher:* {response}", parse_mode='Markdown')
+
+async def stop_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['chat_mode'] = False
+    await update.message.reply_text("✅ Сөйлесу режимі тоқтатылды. /start арқылы қайта бастаңыз.")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🤖 *AI English Teacher Bot*\n\n"
+        "📌 Командалар:\n"
+        "/start - Бастау\n"
+        "/stop_chat - Сөйлесуді тоқтату\n"
+        "/help - Көмек\n\n"
+        "💰 *ТЕГІН!*",
+        parse_mode='Markdown'
+    )
+
+# ==================== НЕГІЗГІ ФУНКЦИЯ ====================
+def main():
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop_chat", stop_chat))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat_handler))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    print("🤖 Бот іске қосылды! Telegram-да ботыңызды іздеңіз")
+    print("💰 Тегін AI ағылшын тілі боты")
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == '__main__':
+    main()
