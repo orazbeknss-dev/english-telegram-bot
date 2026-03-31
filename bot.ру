@@ -1,17 +1,21 @@
 import os
 import logging
 import nest_asyncio
+import google.generativeai as genai
+
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+
 from gtts import gTTS
-from groq import Groq
 
 nest_asyncio.apply()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-client = Groq(api_key=GROQ_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
+
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,52 +35,45 @@ def create_audio(text):
 
 def correct_english(text):
 
-    try:
-
-        prompt = f"""
+    prompt = f"""
 You are an English teacher.
 
-Correct the sentence and explain shortly.
+Correct the sentence and explain the mistake.
 
-Sentence: {text}
+Sentence:
+{text}
 
 Answer format:
-Correct: ...
-Explanation: ...
+
+Correct sentence:
+...
+
+Explanation:
+...
 """
 
-        response = client.chat.completions.create(
-    model="llama3-8b-8192",
-    messages=[
-        {"role": "user", "content": prompt}
-    ],
-    temperature=0.3,
-    max_tokens=200
-)
-        
-        return response.choices[0].message.content
+    response = model.generate_content(prompt)
 
-    except Exception as e:
-        print(e)
-        return "AI error. Please try again."
+    return response.text
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_text = update.message.text
 
-    result = correct_english(user_text)
-
-    await update.message.reply_text(result)
-
     try:
+
+        result = correct_english(user_text)
+
+        await update.message.reply_text(result)
+
         audio_file = create_audio(result)
 
-        await update.message.reply_voice(
-            voice=open(audio_file, "rb")
-        )
+        await update.message.reply_voice(voice=open(audio_file, "rb"))
 
     except Exception as e:
+
+        await update.message.reply_text("AI error. Please try again.")
         print(e)
 
 
