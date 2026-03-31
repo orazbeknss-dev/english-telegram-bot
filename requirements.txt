@@ -1,5 +1,5 @@
-python-telegram-bot==22.7
+python-telegram-bot==20.7
 requests
 gtts
-groq
 nest_asyncio
+google-generativeai
